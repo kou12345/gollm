@@ -27,6 +27,49 @@ type ChatHistory struct {
 
 const historyFile = "chat_history.json"
 
+// TODO ストリーミングでレスポンスを表示する
+// TODO チャットの履歴一覧を表示する
+// TODO チャットの履歴一覧から選択して再開する
+// TODO チャットの履歴を削除する
+// TODO ResponseのMarkdownを表示する
+
+func loadChatHistory() ChatHistory {
+	var history ChatHistory
+	data, err := os.ReadFile(historyFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("No existing chat history found. Starting a new conversation.")
+			return ChatHistory{Messages: []ChatMessage{}}
+		}
+		fmt.Printf("Failed to read chat history file: %v\nStarting with an empty history.\n", err)
+		return ChatHistory{Messages: []ChatMessage{}}
+	}
+
+	err = json.Unmarshal(data, &history)
+	if err != nil {
+		fmt.Printf("Error occurred while parsing chat history: %v\nStarting with an empty history.\n", err)
+		return ChatHistory{Messages: []ChatMessage{}}
+	}
+
+	fmt.Printf("Successfully loaded chat history with %d messages.\n", len(history.Messages))
+	return history
+}
+
+func saveChatHistory(history ChatHistory) {
+	data, err := json.MarshalIndent(history, "", "  ")
+	if err != nil {
+		fmt.Printf("Failed to convert chat history to JSON: %v\nChat history not saved.\n", err)
+		return
+	}
+
+	err = os.WriteFile(historyFile, data, 0644)
+	if err != nil {
+		fmt.Printf("Failed to save chat history to file: %v\nPlease check file permissions or disk space.\n", err)
+	} else {
+		fmt.Println("Chat history successfully saved.")
+	}
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -40,7 +83,7 @@ func main() {
 	}
 	defer client.Close()
 
-	model := client.GenerativeModel("gemini-1.5-pro")
+	model := client.GenerativeModel("gemini-1.5-flash")
 
 	// Initialize the chat
 	cs := model.StartChat()
@@ -78,7 +121,7 @@ func main() {
 
 		resp, err := cs.SendMessage(ctx, genai.Text(userInput))
 		if err != nil {
-			log.Printf("Error: %v\n", err)
+			fmt.Printf("Error occurred while communicating with Gemini: %v\nPlease try again.\n", err)
 			continue
 		}
 
@@ -97,7 +140,7 @@ func main() {
 				Time:    time.Now(),
 			})
 		} else {
-			fmt.Println("Gemini: No response received.")
+			fmt.Println("Gemini: No response received. The AI model might be experiencing issues.")
 		}
 		fmt.Println()
 
@@ -106,39 +149,6 @@ func main() {
 	}
 
 	if err := scanner.Err(); err != nil {
-		log.Printf("Error reading input: %v\n", err)
-	}
-}
-
-func loadChatHistory() ChatHistory {
-	var history ChatHistory
-	data, err := os.ReadFile(historyFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return ChatHistory{Messages: []ChatMessage{}}
-		}
-		log.Printf("Error reading chat history: %v\n", err)
-		return ChatHistory{Messages: []ChatMessage{}}
-	}
-
-	err = json.Unmarshal(data, &history)
-	if err != nil {
-		log.Printf("Error unmarshaling chat history: %v\n", err)
-		return ChatHistory{Messages: []ChatMessage{}}
-	}
-
-	return history
-}
-
-func saveChatHistory(history ChatHistory) {
-	data, err := json.MarshalIndent(history, "", "  ")
-	if err != nil {
-		log.Printf("Error marshaling chat history: %v\n", err)
-		return
-	}
-
-	err = os.WriteFile(historyFile, data, 0644)
-	if err != nil {
-		log.Printf("Error writing chat history: %v\n", err)
+		fmt.Printf("Error occurred while reading input: %v\nExiting program.\n", err)
 	}
 }

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/glamour"
+	"github.com/fatih/color"
 	"github.com/google/generative-ai-go/genai"
 	"github.com/joho/godotenv"
 	"google.golang.org/api/iterator"
@@ -31,8 +33,26 @@ const historyFile = "chat_history.json"
 // TODO チャットの履歴一覧を表示する
 // TODO チャットの履歴一覧から選択して再開する
 // TODO チャットの履歴を削除する
-// TODO ResponseのMarkdownを表示する
-// TODO エラーメッセージを赤く表示する
+// TODO Markdownで表示することとstreamingの両立
+
+var (
+	errorColor   = color.New(color.FgRed).SprintFunc()
+	successColor = color.New(color.FgGreen).SprintFunc()
+	userColor    = color.New(color.FgCyan).SprintFunc()
+	aiColor      = color.New(color.FgYellow).SprintFunc()
+)
+
+func renderMarkdown(md string) string {
+	r, _ := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(100),
+	)
+	out, err := r.Render(md)
+	if err != nil {
+		return md // エラーが発生した場合は元のテキストを返す
+	}
+	return out
+}
 
 func loadChatHistory() ChatHistory {
 	var history ChatHistory
@@ -74,13 +94,13 @@ func saveChatHistory(history ChatHistory) {
 func main() {
 	err := godotenv.Load()
 	if err != nil {
-		log.Fatal("Error loading .env file")
+		log.Fatal(errorColor("Error loading .env file"))
 	}
 
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, option.WithAPIKey(os.Getenv("GEMINI_API_KEY")))
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal(errorColor(err))
 	}
 	defer client.Close()
 
@@ -102,14 +122,14 @@ func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 
 	for {
-		fmt.Print("You: ")
+		fmt.Print(userColor("You: "))
 		if !scanner.Scan() {
 			break
 		}
 		userInput := scanner.Text()
 
 		if strings.ToLower(userInput) == "exit" {
-			fmt.Println("Exiting chat...")
+			fmt.Println(successColor("Exiting chat..."))
 			break
 		}
 
@@ -124,7 +144,7 @@ func main() {
 		iter := cs.SendMessageStream(ctx, prompt)
 
 		var fullResponse string
-		fmt.Print("Gemini: ")
+		fmt.Print(aiColor("Gemini: "))
 
 		for {
 			resp, err := iter.Next()
@@ -132,7 +152,7 @@ func main() {
 				break
 			}
 			if err != nil {
-				fmt.Printf("Error occurred while receiving response: %v\n", err)
+				fmt.Println(errorColor(fmt.Sprintf("Error occurred while receiving response: %v", err)))
 				break
 			}
 
@@ -140,14 +160,19 @@ func main() {
 				for _, part := range resp.Candidates[0].Content.Parts {
 					partContent := fmt.Sprint(part)
 					fullResponse += partContent
-					fmt.Print(partContent)
+					// ストリーミング中の出力を削除
+					// fmt.Print(partContent)
 				}
 			}
 		}
 
-		fmt.Println()
+		fmt.Println() // 改行を追加
 
 		if fullResponse != "" {
+			// レンダリングされたマークダウンを表示
+			fmt.Print(aiColor("Gemini: "))
+			fmt.Println(renderMarkdown(fullResponse))
+
 			// Add Gemini's complete response to history
 			history.Messages = append(history.Messages, ChatMessage{
 				Role:    "assistant",
@@ -158,11 +183,11 @@ func main() {
 			// Save chat history after the complete response is received
 			saveChatHistory(history)
 		} else {
-			fmt.Println("Gemini: No response received. The AI model might be experiencing issues.")
+			fmt.Println(errorColor("Gemini: No response received. The AI model might be experiencing issues."))
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		fmt.Printf("Error occurred while reading input: %v\nExiting program.\n", err)
+		fmt.Println(errorColor(fmt.Sprintf("Error occurred while reading input: %v\nExiting program.", err)))
 	}
 }

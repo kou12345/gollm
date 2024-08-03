@@ -1,2 +1,4 @@
 .env
 chat_history.json
+# sqlite db file
+db.sql

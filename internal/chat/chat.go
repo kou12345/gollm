@@ -1,3 +1,4 @@
+// Package chat は、AIとのチャット機能を提供します。
 package chat
 
 import (
@@ -15,6 +16,7 @@ import (
 	"google.golang.org/api/option"
 )
 
+// Chat は、AIとのチャットセッションを管理する構造体です。
 type Chat struct {
 	client  *genai.Client
 	model   *genai.GenerativeModel
@@ -23,6 +25,9 @@ type Chat struct {
 	scanner *bufio.Scanner
 }
 
+// NewChat は、新しいChatインスタンスを作成し、初期化します。
+// opts は、genai.NewClientに渡されるオプションです。
+// エラーが発生した場合は、nilとエラーを返します。
 func NewChat(opts ...option.ClientOption) (*Chat, error) {
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, opts...)
@@ -51,10 +56,13 @@ func NewChat(opts ...option.ClientOption) (*Chat, error) {
 	}, nil
 }
 
+// Close は、Chatインスタンスに関連するリソースを解放します。
 func (c *Chat) Close() {
 	c.client.Close()
 }
 
+// Run は、チャットセッションを開始し、ユーザーの入力を処理します。
+// ユーザーが "exit" と入力するまで、または入力エラーが発生するまで継続します。
 func (c *Chat) Run() {
 	for {
 		fmt.Print(utils.UserColor("You: "))
@@ -88,6 +96,9 @@ func (c *Chat) Run() {
 	}
 }
 
+// sendMessage は、指定されたメッセージをAIモデルに送信し、応答を取得します。
+// 応答はストリーミング形式で受信され、全ての応答を結合して返します。
+// エラーが発生した場合や応答が空の場合は、空文字列を返します。
 func (c *Chat) sendMessage(message string) string {
 	ctx := context.Background()
 	prompt := genai.Text(message)

@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/generative-ai-go/genai"
 	"github.com/joho/godotenv"
+	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 )
 
@@ -27,11 +28,11 @@ type ChatHistory struct {
 
 const historyFile = "chat_history.json"
 
-// TODO ストリーミングでレスポンスを表示する
 // TODO チャットの履歴一覧を表示する
 // TODO チャットの履歴一覧から選択して再開する
 // TODO チャットの履歴を削除する
 // TODO ResponseのMarkdownを表示する
+// TODO エラーメッセージを赤く表示する
 
 func loadChatHistory() ChatHistory {
 	var history ChatHistory
@@ -119,33 +120,46 @@ func main() {
 			Time:    time.Now(),
 		})
 
-		resp, err := cs.SendMessage(ctx, genai.Text(userInput))
-		if err != nil {
-			fmt.Printf("Error occurred while communicating with Gemini: %v\nPlease try again.\n", err)
-			continue
+		prompt := genai.Text(userInput)
+		iter := cs.SendMessageStream(ctx, prompt)
+
+		var fullResponse string
+		fmt.Print("Gemini: ")
+
+		for {
+			resp, err := iter.Next()
+			if err == iterator.Done {
+				break
+			}
+			if err != nil {
+				fmt.Printf("Error occurred while receiving response: %v\n", err)
+				break
+			}
+
+			if len(resp.Candidates) > 0 && len(resp.Candidates[0].Content.Parts) > 0 {
+				for _, part := range resp.Candidates[0].Content.Parts {
+					partContent := fmt.Sprint(part)
+					fullResponse += partContent
+					fmt.Print(partContent)
+				}
+			}
 		}
 
-		if len(resp.Candidates) > 0 && len(resp.Candidates[0].Content.Parts) > 0 {
-			fmt.Print("Gemini: ")
-			var responseContent string
-			for _, part := range resp.Candidates[0].Content.Parts {
-				responseContent += fmt.Sprint(part)
-			}
-			fmt.Println(responseContent)
+		fmt.Println()
 
-			// Add Gemini's response to history
+		if fullResponse != "" {
+			// Add Gemini's complete response to history
 			history.Messages = append(history.Messages, ChatMessage{
 				Role:    "assistant",
-				Content: responseContent,
+				Content: fullResponse,
 				Time:    time.Now(),
 			})
+
+			// Save chat history after the complete response is received
+			saveChatHistory(history)
 		} else {
 			fmt.Println("Gemini: No response received. The AI model might be experiencing issues.")
 		}
-		fmt.Println()
-
-		// Save chat history after each interaction
-		saveChatHistory(history)
 	}
 
 	if err := scanner.Err(); err != nil {

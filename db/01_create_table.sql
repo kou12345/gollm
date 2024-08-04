@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS chat_rooms (
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_room_id INTEGER NOT NULL,
+    role TEXT NOT NULL,
     message TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (chat_room_id) REFERENCES chat_rooms(id)

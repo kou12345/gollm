@@ -8,17 +8,24 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/joho/godotenv"
-	"github.com/kou12345/gollm/internal/render"
 	"github.com/kou12345/gollm/pkg/utils"
 
 	_ "github.com/mattn/go-sqlite3"
-
-	"github.com/charmbracelet/bubbles/list"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
+
+// 複雑なANSIエスケープシーケンスを処理する場合を除き、
+// 通常はこれを使用する必要はありません。
+// ちらつきに気づいた場合は有効にしてください。
+//
+// また、高性能レンダリングは端末の全サイズを使用するプログラムでのみ
+// 機能することに注意してください。以下でtea.EnterAltScreen()を使用して
+// これを有効にしています。
+const useHighPerformanceRenderer = false
 
 var (
 	titleStyle = func() lipgloss.Style {
@@ -32,6 +39,8 @@ var (
 		b.Left = "┤"
 		return titleStyle.BorderStyle(b)
 	}()
+
+	docStyle = lipgloss.NewStyle().Margin(1, 2)
 )
 
 type ChatRoom struct {
@@ -53,13 +62,19 @@ type Message struct {
 	CreatedAt  time.Time
 }
 
+type State string
+
+const (
+	StateList State = "list"
+	StateChat State = "chat"
+)
+
 type model struct {
-	list         list.Model
-	viewport     viewport.Model
-	selectedRoom *ChatRoom
-	messages     []Message
-	state        string
-	db           *sql.DB
+	ready     bool           // ビューポートが初期化されたかどうか
+	viewport  viewport.Model // ビューポートは、スクロール可能なビューを提供します
+	chatRooms list.Model     // チャットルームのリスト
+	messages  []Message      // チャットメッセージのリスト
+	state     State          // アプリケーションの状態
 }
 
 func (m model) Init() tea.Cmd {
@@ -67,88 +82,81 @@ func (m model) Init() tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var (
+		cmd  tea.Cmd
+		cmds []tea.Cmd
+	)
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch m.state {
-		case "list":
-			switch msg.String() {
-			case "ctrl+c", "q":
-				return m, tea.Quit
-			case "enter":
-				selectedItem := m.list.SelectedItem()
-				if selectedItem != nil {
-					m.selectedRoom = &ChatRoom{}
-					*m.selectedRoom = selectedItem.(ChatRoom)
-					m.state = "chat"
-					m.loadMessages()
-					m.updateViewport()
-					return m, nil
-				}
-			}
-		case "chat":
-			switch msg.String() {
-			case "ctrl+c", "q":
-				return m, tea.Quit
-			case "esc":
-				m.state = "list"
-				m.selectedRoom = nil
-				return m, nil
-			}
+		if k := msg.String(); k == "ctrl+c" || k == "q" || k == "esc" {
+			return m, tea.Quit
 		}
+
 	case tea.WindowSizeMsg:
-		if m.state == "list" {
-			h, v := docStyle.GetFrameSize()
-			m.list.SetSize(msg.Width-h, msg.Height-v)
+		headerHeight := lipgloss.Height(m.headerView())
+		footerHeight := lipgloss.Height(m.footerView())
+		verticalMarginHeight := headerHeight + footerHeight
+
+		if !m.ready {
+			// このプログラムはビューポートの全サイズを使用しているため、
+			// ビューポートを初期化する前にウィンドウの寸法を受け取る必要があります。
+			// 初期寸法は非同期ですが素早く到着するため、ここで待機しています。
+			m.viewport = viewport.New(msg.Width, msg.Height-verticalMarginHeight)
+			m.viewport.YPosition = headerHeight
+			m.viewport.HighPerformanceRendering = useHighPerformanceRenderer
+
+			m.ready = true
+
+			// m.listの要素を表示する
+
+			// これは高性能レンダリングにのみ必要で、
+			// ほとんどの場合は必要ありません。
+			//
+			// ビューポートをヘッダーの1行下にレンダリングします。
+			m.viewport.YPosition = headerHeight + 1
 		} else {
 			m.viewport.Width = msg.Width
-			m.viewport.Height = msg.Height - 4 // Adjust for header and footer
+			m.viewport.Height = msg.Height - verticalMarginHeight
 		}
-		m.updateViewport()
+
+		if useHighPerformanceRenderer {
+			// ビューポート全体をレンダリング（または再レンダリング）します。
+			// ビューポートの初期化時とウィンドウのサイズ変更時の両方で必要です。
+			//
+			// これは高性能レンダリングにのみ必要です。
+			cmds = append(cmds, viewport.Sync(m.viewport))
+		}
 	}
 
-	var cmd tea.Cmd
-	if m.state == "list" {
-		m.list, cmd = m.list.Update(msg)
+	if m.state == StateList {
+		m.chatRooms, cmd = m.chatRooms.Update(msg)
+		cmds = append(cmds, cmd)
 	} else {
 		m.viewport, cmd = m.viewport.Update(msg)
+		cmds = append(cmds, cmd)
 	}
-	return m, cmd
+
+	return m, tea.Batch(cmds...)
 }
 
-func (m *model) loadMessages() {
-	m.messages = []Message{}
-	rows, err := m.db.Query("SELECT id, chat_room_id, message, created_at FROM messages WHERE chat_room_id = ? ORDER BY created_at", m.selectedRoom.ID)
-	if err != nil {
-		log.Printf("Error loading messages: %v", err)
-		return
+func (m model) View() string {
+	if !m.ready {
+		return "\n  初期化中..."
 	}
-	defer rows.Close()
 
-	for rows.Next() {
-		var msg Message
-		err := rows.Scan(&msg.ID, &msg.ChatRoomID, &msg.Content, &msg.CreatedAt)
-		if err != nil {
-			log.Printf("Error scanning message: %v", err)
-			continue
-		}
-		m.messages = append(m.messages, msg)
+	switch m.state {
+	case StateList:
+		return docStyle.Render(m.chatRooms.View())
+	case StateChat:
+		return "hoge"
 	}
-}
 
-// * ここでmessagesの表示をしている
-func (m *model) updateViewport() {
-	var content strings.Builder
-	for _, msg := range m.messages {
-		formattedTime := msg.CreatedAt.Format("2006-01-02 15:04:05")
-		header := fmt.Sprintf("**[%s]**\n\n", formattedTime)
-		renderedContent := render.RenderMarkdown(header + msg.Content)
-		content.WriteString(renderedContent)
-	}
-	m.viewport.SetContent(content.String())
+	return fmt.Sprintf("%s\n%s\n%s", m.headerView(), m.viewport.View(), m.footerView())
 }
 
 func (m model) headerView() string {
-	title := titleStyle.Render("Chat Room: " + m.selectedRoom.Name)
+	title := titleStyle.Render("Mr. Pager")
 	line := strings.Repeat("─", max(0, m.viewport.Width-lipgloss.Width(title)))
 	return lipgloss.JoinHorizontal(lipgloss.Center, title, line)
 }
@@ -159,18 +167,14 @@ func (m model) footerView() string {
 	return lipgloss.JoinHorizontal(lipgloss.Center, line, info)
 }
 
-func (m model) View() string {
-	switch m.state {
-	case "list":
-		return docStyle.Render(m.list.View())
-	case "chat":
-		return fmt.Sprintf("%s\n%s\n%s", m.headerView(), m.viewport.View(), m.footerView())
-	default:
-		return "Loading..."
+// ダミーメッセージを生成する関数
+func generateDummyMessages() []Message {
+	return []Message{
+		{ID: 1, ChatRoomID: 1, Content: "こんにちは！", CreatedAt: time.Now().Add(-10 * time.Minute)},
+		{ID: 2, ChatRoomID: 1, Content: "今日はどうですか？", CreatedAt: time.Now().Add(-5 * time.Minute)},
+		{ID: 3, ChatRoomID: 1, Content: "素晴らしいです！", CreatedAt: time.Now().Add(-1 * time.Minute)},
 	}
 }
-
-var docStyle = lipgloss.NewStyle().Margin(1, 2)
 
 func main() {
 	err := godotenv.Load()
@@ -183,7 +187,10 @@ func main() {
 		log.Fatal(utils.ErrorColor("GEMINI_API_KEY is not set in the environment"))
 	}
 
-	DbConnection, _ := sql.Open("sqlite3", "./db.sql")
+	DbConnection, err := sql.Open("sqlite3", "./db.sql")
+	if err != nil {
+		log.Fatal(utils.ErrorColor("Error opening database: " + err.Error()))
+	}
 	defer DbConnection.Close()
 
 	cmd := `SELECT * FROM chat_rooms;`
@@ -191,6 +198,9 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
+	defer rows.Close()
+
+	fmt.Println(rows)
 
 	var items []list.Item
 	for rows.Next() {
@@ -202,27 +212,23 @@ func main() {
 		items = append(items, chatRoom)
 	}
 
-	m := model{
-		list:  list.New(items, list.NewDefaultDelegate(), 0, 0),
-		state: "list",
-		db:    DbConnection,
-	}
-	m.list.Title = "Chat Rooms"
-	m.viewport = viewport.New(80, 20)
-	m.viewport.SetContent("No messages yet.")
+	// ダミーメッセージを生成
+	dummyMessages := generateDummyMessages()
 
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	m := model{
+		chatRooms: list.New(items, list.NewDefaultDelegate(), 0, 0),
+		messages:  dummyMessages,
+		state:     "list",
+	}
+
+	p := tea.NewProgram(
+		m,
+		tea.WithAltScreen(),       // 端末の「代替画面バッファ」のフルサイズを使用します
+		tea.WithMouseCellMotion(), // マウスホイールを追跡できるようにマウスサポートをオンにします
+	)
 
 	if _, err := p.Run(); err != nil {
-		fmt.Println("Error running program:", err)
+		fmt.Println("プログラムを実行できませんでした:", err)
 		os.Exit(1)
 	}
 }
-
-// chat, err := chat.NewChat(option.WithAPIKey(apiKey))
-// if err != nil {
-// 	log.Fatal(utils.ErrorColor(err))
-// }
-// defer chat.Close()
-
-// chat.Run()
